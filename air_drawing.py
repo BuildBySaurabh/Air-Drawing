@@ -14,7 +14,7 @@
 ║        while holding:  roll wrist = ROTATE   |  BOTH hands pinch = SCALE       ║
 ║                        hand toward camera = PUSH  |  hand back = PULL          ║
 ║   👊  Fist                    → ERASE (circular rubber eraser)                 ║
-║   🖐  Open palm (hold 0.3 s)  → LAUNCH (drawings fall with physics)            ║
+║   ✌  Peace sign (hold 0.5 s)  → LAUNCH (drawings fall with physics)            ║
 ║                                                                                ║
 ║  LEFT HAND  (physics sandbox)                                                  ║
 ║   👊  Fist                    → PUSH  (push nearest object away)               ║
@@ -90,6 +90,7 @@ MAX_HANDS = 2
 EMA_FAST = 0.55
 EMA_SLOW = 0.30
 MIN_MOVE_PX = 2
+DRAW_GRACE_S = 0.25        # a stroke waits this long through lost tracking / a misread gesture before it is closed
 DENSIFY_STEP = 3.0
 VEL_HISTORY  = 6
 GRAVITY_PRESETS = [(0, 900), (0, -900), (0, 0)]
@@ -133,7 +134,7 @@ PALETTE: Dict[str, Dict] = {
     "8": {"name": "Black",   "rgb": ( 20,  20,  20)},
 }
 
-LAUNCH_HOLD_S = 0.28
+LAUNCH_HOLD_S = 0.50                      # peace sign must be held this long (no accidental launches while drawing)
 RADIAL_HOLD_S = 1.00
 UI_HOVER_S    = 0.50
 
@@ -167,13 +168,14 @@ THUMB_FOLDED_THRESHOLD   = 0.85     # dist(thumb tip, index knuckle) / palm
 REQUIRE_THUMB_FOLDED_FOR_DRAW = False   # True = strict spec; False = thumb may stick out
 GESTURE_HYSTERESIS = 0.12           # extra tolerance once a gesture is already active
 
-GRAB_PINCH_THRESHOLD   = 0.30       # thumb-tip <-> middle-tip, enter GRAB
-GRAB_RELEASE_THRESHOLD = 0.48       # ...leave GRAB (hysteresis)
+GRAB_PINCH_THRESHOLD   = 0.34       # thumb-tip <-> middle-tip, enter GRAB
+GRAB_RELEASE_THRESHOLD = 0.58       # ...leave GRAB (hysteresis)
 GRAB_MIN_MIDDLE_REACH  = 1.10       # middle must not be curled into a fist
 GRAB_HOVER_THRESHOLD   = 0.75       # show "selectable" highlight when this close
-GRAB_SELECT_RADIUS     = 80         # px from stroke surface
-GRAB_ACQUIRE_S         = 0.30       # after pinching, how long we may still latch onto an object
+GRAB_SELECT_RADIUS     = 115        # px from stroke surface
+GRAB_ACQUIRE_S         = 0.60       # after pinching, how long we may still latch onto an object
 GRAB_SMOOTH            = 0.55       # EMA on the pinch point
+GRAB_HOLD_GRACE        = 0.15       # s a held 3-D object survives a lost / blinking hand
 MAX_THROW_SPEED        = 2800.0     # px/s clamp on release
 
 RESIZE_ENTER = 0.55                 # thumb-tip <-> index-tip to enter RESIZE
@@ -201,7 +203,7 @@ PUSHPULL_FORCE       = 30_000  # impulse/sec at full strength, point-blank
 
 # frames a new gesture must persist before it becomes active (anti-flicker)
 GESTURE_ENTER_FRAMES = {"DRAW": 2, "GRAB": 2, "ERASE": 3, "PINCH": 3,
-                        "LAUNCH": 2, "PUSH": 3, "BLAST": 2, "IDLE": 3}
+                        "LAUNCH": 4, "PALM": 3, "PUSH": 3, "BLAST": 2, "IDLE": 3}
 
 class WebcamStream:
     def __init__(self, idx: int, w: int, h: int):
@@ -247,18 +249,19 @@ class DualEMA:
         self._x2 = self._y2 = None
 
     def update(self, x: float, y: float) -> Tuple[float, float]:
-        #Stage 1
+        # speed of the (lightly filtered) fingertip: tremor barely registers -> heavy smoothing; real movement -> light smoothing, no lag
         if self._x1 is None:
-            self._x1, self._y1 = float(x), float(y)
-        else:
-            self._x1 = self._af * x + (1 - self._af) * self._x1
-            self._y1 = self._af * y + (1 - self._af) * self._y1
-        #Stage 2 over stage-1 output
-        if self._x2 is None:
-            self._x2, self._y2 = self._x1, self._y1
-        else:
-            self._x2 = self._as * self._x1 + (1 - self._as) * self._x2
-            self._y2 = self._as * self._y1 + (1 - self._as) * self._y2
+            self._x1, self._y1 = float(x), float(y); self._x2, self._y2 = self._x1, self._y1
+            return self._x2, self._y2
+        step = 0.45 * math.hypot(x - self._x1, y - self._y1)
+        k = max(0.0, min(1.0, (step - 4.0) / 20.0))
+        k = k * k * (3 - 2 * k)
+        af = 0.45 + (0.88 - 0.45) * k
+        as_ = 0.24 + (0.65 - 0.24) * k
+        self._x1 = af * x + (1 - af) * self._x1
+        self._y1 = af * y + (1 - af) * self._y1
+        self._x2 = as_ * self._x1 + (1 - as_) * self._x2
+        self._y2 = as_ * self._y1 + (1 - as_) * self._y2
         return self._x2, self._y2
 
     def reset(self):
@@ -401,9 +404,15 @@ class GestureEngine:
         if idx_ext and others_folded and thumb_ok:
             return "DRAW"
 
-        # 5. LAUNCH / BLAST  (open palm)
+        # 4b. LAUNCH  (right hand PEACE sign: index + middle up, ring + pinky folded)
+        mth = FINGER_EXTENDED_THRESHOLD + (0.30 if prev == "DRAW" else 0.12)        # middle finger clearly up (and even more so mid-stroke)
+        if (right and R["index"] >= INDEX_EXTENDED_THRESHOLD and R["middle"] >= mth
+                and R["ring"] <= RING_FOLDED_THRESHOLD + dh and R["pinky"] <= PINKY_FOLDED_THRESHOLD + dh):
+            return "LAUNCH"
+
+        # 5. open palm: right = PALM (radial menu only, no launch), left = BLAST
         if all(R[k] >= FINGER_EXTENDED_THRESHOLD for k in R):
-            return "LAUNCH" if right else "BLAST"
+            return "PALM" if right else "BLAST"
         return "IDLE"
 
     # ---- debounce ----
@@ -449,12 +458,15 @@ class GestureClassifier:
         self._radial_t: Dict[str, float] = {"Right": 0.0, "Left": 0.0}
 
     def _timers(self, label: str, gesture: str, t: float):
-        want = "LAUNCH" if label == "Right" else "BLAST"
-        if gesture == want:
+        lw, rw = ("LAUNCH", "PALM") if label == "Right" else ("BLAST", "BLAST")
+        if gesture == lw:
             if not self._launch_t[label]: self._launch_t[label] = t
+        else:
+            self._launch_t[label] = 0.0
+        if gesture == rw:
             if not self._radial_t[label]: self._radial_t[label] = t
         else:
-            self._launch_t[label] = self._radial_t[label] = 0.0
+            self._radial_t[label] = 0.0
 
     def process(self, rgb_frame: np.ndarray) -> List[HandData]:
         result = self._hands.process(rgb_frame)
@@ -2044,7 +2056,8 @@ class HUD:
 
         MODES = {
             "DRAW":   ("✏  DRAW",    (80,  225,  80)),
-            "LAUNCH": ("🌍 LAUNCH",  (230, 185,  50)),
+            "LAUNCH": ("✌ LAUNCH",  (230, 185,  50)),
+            "PALM":   ("🖐 MENU",    (150, 200, 240)),
             "GRAB":   ("GRAB",       ( 80, 180, 230)),
             "ERASE":  ("👊 ERASE",  (230, 100,  60)),
             "PINCH":  ("🤌 RESIZE", (200, 100, 230)),
@@ -2147,6 +2160,7 @@ class GlowCursor:
             "ERASE":  (230,  80,  80),
             "PINCH":  (200, 100, 230),
             "LAUNCH": (230, 185,  50),
+            "PALM":   (150, 200, 240),
             "PUSH":   (230, 140,  60),
             "BLAST":  (230,  80,  50),
             "IDLE":   (150, 150, 150),
@@ -3382,6 +3396,7 @@ class Grab3DController:
         self._sm: Optional[np.ndarray] = None
         self._was = {"Right": False, "Left": False}
         self._acq = {"Right": 0.0, "Left": 0.0}
+        self._seen_t = 0.0
         self._reset_manip()
 
     def _reset_manip(self):
@@ -3447,7 +3462,7 @@ class Grab3DController:
     def _start(self, s: Solid3D, h: HandData):
         self.active, self.hand, self.body = True, h.label, s
         s.held = s.selected = True; s.vel[:] = 0; s.ang[:] = 0
-        self._sm = None; self._reset_manip()
+        self._sm = None; self._reset_manip(); self._seen_t = time.perf_counter()
         P0 = self._smooth(h.grab_pt)
         csx, csy, ck, zc = self.scene.center_screen(s)
         self._depth0 = zc; self._off = np.array([csx - P0[0], csy - P0[1]]) / ck
@@ -3560,9 +3575,12 @@ class Grab3DController:
                 event = self.release()
             elif h is None and other is not None and sc.pick(other.grab_pt, HANDOFF_RADIUS)[0] is self.body:
                 self._transfer(other); event = "handoff"           # other hand is on the object: pass it over
+            elif h is None and not any(x.label == self.hand for x in hands) and now - self._seen_t < GRAB_HOLD_GRACE:
+                pass                                               # tracking blip: keep holding, don't drop it
             elif h is None:
                 event = self.release()                             # otherwise a normal throw (the other hand may catch it)
             else:
+                self._seen_t = now
                 spin = next((x for x in hands if x.label != self.hand and x.gesture == "DRAW" and x.tip), None)
                 self._manipulate(h, other, dt, now, spin)
         if not self.active:
@@ -5244,7 +5262,7 @@ class AIMixin:
         if self._ai_pending and now - self._last_stroke_t >= AI_SETTLE_S:
             self._ai_pending = False
             rec = self._ai_recognize_now()
-            if rec is not None and self.ai_auto_clean and rec.label in PRIMITIVE_KINDS and rec.conf >= 0.8 and not self._drawing_locked():
+            if rec is not None and self.ai_auto_clean and rec.label in PRIMITIVE_KINDS and rec.conf >= 0.7 and not self._drawing_locked():
                 self.ai_clean(auto=True)
         if self.ai_rec is not None and not self._ai_rec_valid():
             self.ai_rec, self.ai_rec_ids = None, []
@@ -7680,7 +7698,7 @@ ColorPalette.blocks = lambda self, pt: bool(pt) and any(r.inflate(10, 10).collid
 
 # ─────────────────────────────── classic HUD: compact, clear of the tab row and the toolbar ───────────────────────────────
 HUD_STATE = {"hide": False}
-_HUD_MODES = {"DRAW": ("DRAW", (90, 230, 90)), "LAUNCH": ("LAUNCH", (240, 195, 60)), "GRAB": ("GRAB", (90, 190, 240)),
+_HUD_MODES = {"DRAW": ("DRAW", (90, 230, 90)), "LAUNCH": ("LAUNCH", (240, 195, 60)), "PALM": ("MENU", (150, 200, 240)), "GRAB": ("GRAB", (90, 190, 240)),
               "ERASE": ("ERASE", (240, 110, 70)), "PINCH": ("RESIZE", (210, 110, 240)), "PUSH": ("PUSH", (240, 150, 70)),
               "BLAST": ("BLAST", (240, 90, 60)), "IDLE": ("idle", (150, 155, 170))}
 
@@ -7745,11 +7763,13 @@ HELP_LINES = [
     ("Right index finger only", "draw"),
     ("Right thumb + index pinch", "pen size"),
     ("Right fist", "erase"),
-    ("Right open palm (hold)", "launch;  hold 1 s = radial menu"),
+    ("Right PEACE sign (hold 0.5 s)", "LAUNCH the drawing"),
+    ("Right open palm (hold)", "radial menu"),
     ("Thumb + middle pinch (either hand)", "grab / move / throw"),
     ("Left fist", "push objects"),
     ("Left open palm", "blast"),
     ("BOTH index fingers (press W)", "two-hand drawing"),
+    ("RIGHT-SIDE SWITCHES (hold fingertip)", "CLEANUP / 2D>3D / REAL WORLD / BOUNCE"),
     ("MENUS", None),
     ("Hold a fingertip 0.5 s on any button", "press it"),
     ("Top tabs: FILE PLAY ART UI AI TIME ...", "open one menu at a time"),
@@ -7759,6 +7779,7 @@ HELP_LINES = [
     ("W two-hand   M symmetry   J generative   R record", ""),
     ("A AI   / ask   K calculator   U ui   H history   L layers", ""),
     ("Ctrl+S save   Ctrl+G game   Ctrl+T theme   Ctrl+1..9 mode", ""),
+    ("Ctrl+K cleanup   N 2D>3D   Ctrl+W real-world   , . bounce", ""),
     ("Ctrl+/ this guide      Q or Esc quit", ""),
 ]
 
@@ -7795,7 +7816,7 @@ class Polish10Mixin:
     def _ui_blocked_at(self, pt) -> bool:
         if pt is None: return False
         if (self.brush_panel.blocks(pt) or self.fx_panel.blocks(pt) or self.edit_panel.blocks(pt) or self.layer_panel.blocks(pt)
-                or self.time_panel.blocks(pt) or self.chip.blocks(pt) or self.toolbar.blocks(pt) or self.palette.blocks(pt)):
+                or self.time_panel.blocks(pt) or self.chip.blocks(pt) or self.toolbar.blocks(pt) or self.palette.blocks(pt) or self.switches.blocks(pt)):
             return True
         return any(p.blocks(pt) for p, _ in self._ext)
 
@@ -7889,7 +7910,282 @@ class Polish10Mixin:
         s.blit(self._help_surf, r.topleft)
 
 
-class App(AIMixin, UIMixin, ArtMixin, Polish10Mixin):
+# ══════════════════════════════════════════════════════════════════════════════
+#  PHASE 12 — right-side switches (cleanup · 2D>3D · real-world collide · bounce) · camera edges as obstacles
+# ══════════════════════════════════════════════════════════════════════════════
+BOUNCE_STEP = 0.05
+_BOUNCE = {"v": None}                       # None = the app's original per-object defaults until the user touches the control
+WORLD_EVERY_S = 0.25                        # how often the camera is re-read for obstacles
+WORLD_MAX_SEGS = 150
+
+
+class RealWorld:
+    """Turns the camera picture into solid edges (table edge, book, screen, cup rim ...).  Hands are masked out, so your own
+    hands never become obstacles.  Works on a 320x180 copy of the picture - cheap - and is only ever run while the switch is ON."""
+    SW, SH = 320, 180
+
+    def __init__(self):
+        self.enabled = False
+        self.segs: List[Tuple[float, float, float, float]] = []     # display pixels
+        self._acc: Optional[np.ndarray] = None
+        self._t = 0.0
+        self._sig: set = set()
+        self.version = 0
+
+    def reset(self):
+        self._acc, self._t, self._sig, self.segs = None, 0.0, set(), []
+        self.version += 1
+
+    def _hand_mask(self, hands) -> np.ndarray:
+        SW, SH = self.SW, self.SH
+        m = np.zeros((SH, SW), np.uint8)
+        for h in hands or []:
+            try:
+                lms = getattr(h.landmarks, "landmark", h.landmarks)
+                P = np.array([[l.x * SW, (1.0 - l.y) * SH] for l in lms], np.float32)
+                cv2.fillConvexPoly(m, cv2.convexHull(P).astype(np.int32), 255)
+                w, mc = P[0], P[9]                                    # wrist, middle knuckle -> extend the mask along the forearm
+                d = w - mc; n = float(np.hypot(d[0], d[1])) or 1.0; d /= n
+                perp = np.array([-d[1], d[0]], np.float32)
+                half = max(8.0, float(np.hypot(*(P[5] - P[17]))) * 0.75)
+                far = w + d * 260.0
+                quad = np.array([w + perp * half, w - perp * half, far - perp * half * 1.6, far + perp * half * 1.6], np.float32)
+                cv2.fillConvexPoly(m, quad.astype(np.int32), 255)
+            except Exception:
+                continue
+        return cv2.dilate(m, np.ones((17, 17), np.uint8))
+
+    def update(self, frame_bgr: Optional[np.ndarray], hands, now: float) -> bool:
+        """Re-read the camera every WORLD_EVERY_S.  True when the set of obstacle edges changed enough to rebuild physics."""
+        if not self.enabled or frame_bgr is None or now - self._t < WORLD_EVERY_S: return False
+        self._t = now
+        small = cv2.flip(cv2.resize(frame_bgr, (self.SW, self.SH), interpolation=cv2.INTER_AREA), 0)   # vertical flip only = same space as the picture on screen
+        g = cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+        e = (cv2.Canny(g, 45, 120) > 0).astype(np.float32)
+        self._acc = 0.5 * e if self._acc is None else 0.5 * self._acc + 0.5 * e         # an edge must persist -> camera noise never becomes a wall
+        stable = ((self._acc > 0.6).astype(np.uint8)) * 255
+        stable[self._hand_mask(hands) > 0] = 0
+        stable[:3, :] = stable[-3:, :] = 0; stable[:, :3] = stable[:, -3:] = 0
+        lines = cv2.HoughLinesP(stable, 1, np.pi / 180, threshold=12, minLineLength=16, maxLineGap=4)
+        segs: List[Tuple[float, float, float, float]] = []
+        if lines is not None:
+            L = sorted((tuple(int(v) for v in q) for q in np.asarray(lines).reshape(-1, 4)), key=lambda q: -math.hypot(q[2] - q[0], q[3] - q[1]))[:WORLD_MAX_SEGS]
+            kx, ky = WIN_W / self.SW, WIN_H / self.SH
+            segs = [(float(a * kx), float(b * ky), float(c * kx), float(d * ky)) for a, b, c, d in L]
+        sig = {(int(a // 10), int(b // 10), int(c // 10), int(d // 10)) for a, b, c, d in segs}
+        diff = len(sig ^ self._sig)
+        if diff <= 0.2 * max(len(sig), len(self._sig), 1) and self.segs: return False     # nearly the same picture: leave physics alone
+        self._sig, self.segs = sig, segs
+        self.version += 1
+        return True
+
+    def render(self, surface: pygame.Surface):
+        if not self.enabled: return
+        for a, b, c, d in self.segs:
+            pygame.draw.line(surface, (70, 255, 215), (int(a), int(b)), (int(c), int(d)), 2)
+
+
+_orig_add_stroke = PhysicsWorld.add_stroke
+def _add_stroke12(self, pts, color, width, brush=DEFAULT_BRUSH):
+    r = _orig_add_stroke(self, pts, color, width, brush)
+    v = _BOUNCE["v"]
+    if v is not None and self.bodies:
+        pb = self.bodies[-1]; pb.elast = v
+        for sh in pb.shapes: sh.elasticity = v
+    return r
+PhysicsWorld.add_stroke = _add_stroke12
+
+_orig_scene_add = Scene3D.add
+def _scene_add12(self, s, morph: bool = True):
+    r = _orig_scene_add(self, s, morph)
+    if _BOUNCE["v"] is not None: s.bounce = _BOUNCE["v"]
+    return r
+Scene3D.add = _scene_add12
+
+_orig_scene_step = Scene3D.step
+def _scene_step12(self, dt: float):
+    _orig_scene_step(self, dt)
+    sg = getattr(self, "world_segs", None)
+    if sg is None or len(sg) == 0: return
+    view, e = self.view, float(getattr(self, "world_bounce", 0.5))
+    A, B = sg[:, 0:2], sg[:, 2:4]; AB = B - A; L2 = np.maximum((AB ** 2).sum(1), 1e-6)
+    for s in self.solids:
+        if s.building or s.held or not s.active or s.frozen or s.morph < 1.0 or len(s.V) == 0: continue
+        csx, csy, k, _ = self.center_screen(s)
+        r = max(6.0, s.radius * s.scale * 0.75 * k)
+        P = np.array([csx, csy])
+        t = np.clip(((P - A) * AB).sum(1) / L2, 0.0, 1.0)
+        D = P - (A + AB * t[:, None]); dist = np.sqrt((D ** 2).sum(1))
+        i = int(dist.argmin())
+        if dist[i] >= r: continue
+        n = D[i] / dist[i] if dist[i] > 1e-6 else np.array([0.0, -1.0])
+        s.pos += view.R.T @ np.array([n[0] * (r - dist[i]) / k, n[1] * (r - dist[i]) / k, 0.0])
+        vv = view.R @ s.vel
+        vn = float(vv[0] * n[0] + vv[1] * n[1])
+        if vn < 0:
+            f = 1.0 if abs(vn) < 40.0 else (1.0 + e)                    # resting contact: just stop, no micro-bounce
+            vv[0] -= f * vn * n[0]; vv[1] -= f * vn * n[1]
+            s.vel = view.R.T @ vv
+            s.ang *= 0.95
+Scene3D.step = _scene_step12
+
+
+class SwitchPanel:
+    """Always-visible switches on the right edge.  Hold a fingertip on one for 0.5 s (or click / press its key)."""
+    ACC = {"cleanup": (190, 120, 255), "to3d": (170, 130, 255), "world": (60, 230, 200), "bounce": (255, 190, 70)}
+
+    def __init__(self):
+        S = min(UI_SCALE, 1.2)
+        self.W, self.ROW, self.GAP, self.PAD = int(152 * S), int(34 * S), 6, 10
+        self.x = WIN_W - self.W - 10; self.y = 112
+        self.visible = True
+        self._font = pygame.font.SysFont("monospace", int(13 * S), bold=True)
+        self._small = pygame.font.SysFont("monospace", int(11 * S))
+        px, py, W, R, G = self.x + self.PAD, self.y + self.PAD + 18, self.W - 2 * self.PAD, self.ROW, self.GAP
+        self.rects: Dict[str, pygame.Rect] = {}
+        for i, k in enumerate(("cleanup", "to3d", "world")):
+            self.rects[k] = pygame.Rect(px, py + i * (R + G), W, R)
+        by = py + 3 * (R + G)
+        self.rects["bounce-"] = pygame.Rect(px, by, 42, R)
+        self.rects["bounce+"] = pygame.Rect(px + W - 42, by, 42, R)
+        self.rects["_bval"] = pygame.Rect(px + 42, by, W - 84, R)
+        self.status_y = by + R + 4
+        self.panel_rect = pygame.Rect(self.x, self.y, self.W, self.status_y + 18 + self.PAD - self.y)
+        self._hk, self._ht, self._lost, self._anim = None, 0.0, 0.0, {}
+        self._labels = {"cleanup": "CLEANUP", "to3d": "2D > 3D", "world": "REAL WORLD"}
+
+    def blocks(self, pt) -> bool:
+        return bool(self.visible and pt is not None and self.panel_rect.inflate(8, 8).collidepoint(pt))
+
+    def _hit(self, pt):
+        if pt is None or not self.visible: return None
+        if self._hk in self.rects and self._hk != "_bval" and self.rects[self._hk].inflate(2 * UI_STICKY_PX, 8).collidepoint(pt): return self._hk
+        for k, r in self.rects.items():
+            if k != "_bval" and r.inflate(6, 6).collidepoint(pt): return k
+        return None
+
+    def click(self, pos) -> Optional[str]:
+        if not self.visible: return None
+        for k, r in self.rects.items():
+            if k != "_bval" and r.collidepoint(pos): return k
+        return None
+
+    def update(self, tip, dt: float) -> Optional[str]:
+        hov = self._hit(tip)
+        grace = False
+        if hov is None and self._hk is not None and self._lost < UI_LOST_GRACE and self.visible:
+            self._lost += dt; hov = self._hk; grace = True
+        elif hov is not None: self._lost = 0.0
+        fired = None
+        if hov is not None and hov == self._hk:
+            if not grace:
+                self._ht += dt
+                if self._ht >= UI_HOVER_S:
+                    fired = hov
+                    self._ht = (UI_HOVER_S - 0.28) if hov.startswith("bounce") else 0.0      # -/+ keep repeating while held
+        else:
+            self._hk, self._ht = hov, 0.0
+        for k in list(self._anim):
+            tgt = min(self._ht / UI_HOVER_S, 1.0) if k == self._hk else 0.0
+            v = self._anim[k]; self._anim[k] = v + (tgt - v) * min(1.0, dt * (14.0 if tgt > v else 6.0))
+            if self._anim[k] < 0.004 and k != self._hk: del self._anim[k]
+        if self._hk is not None and self._hk not in self._anim: self._anim[self._hk] = 0.0
+        return fired
+
+    def render(self, surface: pygame.Surface, st: dict):
+        if not self.visible: return
+        A = self.ACC["world"]
+        surface.blit(ui_panel_bg(self.panel_rect.w, self.panel_rect.h, A, ui_pulse(210, 30)), self.panel_rect.topleft)
+        t = ui_text(self._small, "QUICK SWITCHES", (170, 205, 215))
+        surface.blit(t, (self.panel_rect.centerx - t.get_width() // 2, self.y + self.PAD))
+        for k in ("cleanup", "to3d", "world"):
+            r, on = self.rects[k], bool(st.get(k))
+            surface.blit(ui_button(r.w, r.h, self.ACC[k], "on" if on else "off", self._anim.get(k, 0.0)), r.topleft)
+            lb = ui_text(self._font, self._labels[k], (240, 244, 255) if on else (190, 198, 215))
+            surface.blit(lb, (r.x + 10, r.centery - lb.get_height() // 2))
+            pw, ph = 34, 18; pr = pygame.Rect(r.right - pw - 8, r.centery - ph // 2, pw, ph)
+            pygame.draw.rect(surface, (46, 200, 120) if on else (62, 68, 88), pr, border_radius=ph // 2)
+            pygame.draw.circle(surface, (250, 252, 255), (pr.right - ph // 2 if on else pr.x + ph // 2, pr.centery), ph // 2 - 2)
+        A = self.ACC["bounce"]
+        for k, sym in (("bounce-", "-"), ("bounce+", "+")):
+            r = self.rects[k]
+            surface.blit(ui_button(r.w, r.h, A, "off", self._anim.get(k, 0.0)), r.topleft)
+            im = ui_text(self._font, sym, (245, 245, 250)); surface.blit(im, (r.centerx - im.get_width() // 2, r.centery - im.get_height() // 2))
+        r = self.rects["_bval"]
+        v1 = ui_text(self._small, "BOUNCE", (200, 190, 150)); v2 = ui_text(self._font, "%d%%" % round(st.get("bounce", 0.5) * 100), (255, 225, 150))
+        surface.blit(v1, (r.centerx - v1.get_width() // 2, r.y + 2)); surface.blit(v2, (r.centerx - v2.get_width() // 2, r.bottom - v2.get_height() - 2))
+        if st.get("world"):
+            msg = "%d edges solid" % st.get("edges", 0)
+            im = ui_text(self._small, msg, (120, 245, 215))
+        else:
+            im = ui_text(self._small, "camera edges: off", (130, 140, 160))
+        surface.blit(im, (self.panel_rect.centerx - im.get_width() // 2, self.status_y))
+
+
+class World12Mixin:
+    def _w12_init(self):
+        self.switches = SwitchPanel()
+        self.world = RealWorld()
+        self.bounce_lvl = 0.5
+        self._world_shapes: list = []
+
+    def _switch_state(self) -> dict:
+        return {"cleanup": self.ai_auto_clean, "to3d": self.auto3d, "world": self.world.enabled,
+                "bounce": self.bounce_lvl, "edges": len(self.world.segs)}
+
+    def _switches_visible(self) -> bool:
+        pn = (self.brush_panel, self.fx_panel, self.edit_panel, self.layer_panel, self.time_panel)
+        return not (any(p.open for p in pn) or any(p.open for p, _ in self._ext) or self.help_on)
+
+    def switch_do(self, key: str):
+        if key == "cleanup":
+            self.ai_auto_clean = not self.ai_auto_clean
+            self.notify.show("Cleanup ON - shapes tidy themselves" if self.ai_auto_clean else "Cleanup OFF", (190, 120, 255))
+        elif key == "to3d":
+            self.auto3d = not self.auto3d
+            self.notify.show("2D > 3D ON - drawings become 3D" if self.auto3d else "2D > 3D OFF", (170, 130, 255))
+        elif key == "world": self.toggle_world()
+        elif key == "bounce-": self.set_bounce(self.bounce_lvl - BOUNCE_STEP)
+        elif key == "bounce+": self.set_bounce(self.bounce_lvl + BOUNCE_STEP)
+
+    def set_bounce(self, v: float):
+        v = max(0.0, min(1.0, round(v / BOUNCE_STEP) * BOUNCE_STEP))
+        self.bounce_lvl = v; _BOUNCE["v"] = v
+        for sh in self.phys.space.static_body.shapes: sh.elasticity = v
+        for pb in self.phys.bodies:
+            pb.elast = v
+            for sh in pb.shapes: sh.elasticity = v
+        for s in self.scene3d.solids: s.bounce = v
+        self.scene3d.world_bounce = v
+        self.notify.show("Bounce %d%%" % round(v * 100), (255, 190, 70))
+
+    def toggle_world(self, on: Optional[bool] = None):
+        on = (not self.world.enabled) if on is None else bool(on)
+        self.world.enabled = on
+        self.world.reset()
+        self._world_apply()
+        self.notify.show("REAL WORLD ON - objects bounce off edges the camera sees" if on else "Real world OFF", (60, 230, 200))
+
+    def _world_apply(self):
+        sp = self.phys.space
+        if self._world_shapes:
+            sp.remove(*self._world_shapes); self._world_shapes = []
+        segs = self.world.segs if self.world.enabled else []
+        v = self.bounce_lvl
+        sb = sp.static_body
+        for a, b, c, d in segs:
+            sh = pymunk.Segment(sb, (a, b), (c, d), 3.0); sh.elasticity = v; sh.friction = 0.6
+            self._world_shapes.append(sh)
+        if self._world_shapes: sp.add(*self._world_shapes)
+        self.scene3d.world_segs = np.array(segs, float).reshape(-1, 4) if segs else None
+        self.scene3d.world_bounce = v
+
+    def _world_update(self, frame, hands):
+        if self.world.enabled and self.world.update(frame, hands, time.perf_counter()):
+            self._world_apply()
+
+
+class App(AIMixin, UIMixin, ArtMixin, Polish10Mixin, World12Mixin):
     def __init__(self):
         pygame.init()
         self.screen = pygame.display.set_mode((WIN_W, WIN_H), pygame.NOFRAME)
@@ -7946,6 +8242,7 @@ class App(AIMixin, UIMixin, ArtMixin, Polish10Mixin):
         self._ui_init()
         self._art_init()
         self._p10_init()
+        self._w12_init()
         self.rename_id: Optional[str] = None
         self.rename_buf = ""
         self._redo: List[tuple] = []
@@ -8540,6 +8837,7 @@ class App(AIMixin, UIMixin, ArtMixin, Polish10Mixin):
     def _draw_objects_layer(self):
         op = self.lyr.opacity("objects")
         self.phys.alpha_mul = self.scene3d.alpha_mul = op
+        self.world.render(self.screen)
         self.phys.render(self.screen, self.show_trails)
         self.grab.render(self.screen)
         self.scene3d.render(self.screen, budget_ms=max(2.5, min(SOLID_REBUILD_MS, 14.0 - (time.perf_counter() - self._t_frame0) * 1000.0)))
@@ -8871,7 +9169,8 @@ class App(AIMixin, UIMixin, ArtMixin, Polish10Mixin):
 
     def run(self):
         print("✅  Air Draw Physics v10  (two-hand, zero-mirror)")
-        print("   Right hand: ☝ index-only DRAW  🤌 RESIZE  👊 ERASE  🖐 LAUNCH")
+        print("   Right hand: ☝ index-only DRAW  🤌 RESIZE  👊 ERASE  ✌ LAUNCH  🖐 radial menu")
+        print("   Right-side switches: CLEANUP / 2D>3D / REAL WORLD collide / BOUNCE  (hold fingertip 0.5 s)")
         print("   Either hand: 🤏 thumb+middle pinch = GRAB / move / throw")
         print("   Left  hand: 👊 PUSH    🖐 BLAST      [D] gesture debug overlay")
         print("   3D: [X] 2D/3D mode  [V] turn last drawing into 3D  [N] auto-3D  [0] reset depth/view")
@@ -8910,6 +9209,8 @@ class App(AIMixin, UIMixin, ArtMixin, Polish10Mixin):
                     fxk = self.fx_panel.click(ev.pos)
                     if fxk: self.apply_effect(fxk)
                     if self.chip.click(ev.pos): self.convert_suggestion()
+                    swk = self.switches.click(ev.pos)
+                    if swk: self.switch_do(swk)
                 elif ev.type == pygame.KEYDOWN:
                     k = pygame.key.name(ev.key)
                     if self.rename_id is not None:                      # typing a layer name: nothing else may fire
@@ -8920,6 +9221,8 @@ class App(AIMixin, UIMixin, ArtMixin, Polish10Mixin):
                     if ctrl and k == "y": self._do_action("redo"); continue
                     if ctrl and len(k) == 1 and k in "123456789": self.set_mode(MODE_ORDER[int(k) - 1]); continue
                     if ctrl and k == "t": self.cycle_theme(); continue
+                    if ctrl and k == "k": self.switch_do("cleanup"); continue
+                    if ctrl and k == "w": self.switch_do("world"); continue
                     if ctrl and k == "s": self.save_project(); continue
                     if ctrl and k == "/": self.toggle_help(); continue
                     if ctrl and k == "g": self.set_mode("GAME") if self.mode_name != "GAME" else self.set_mode("DRAW"); continue
@@ -8958,6 +9261,8 @@ class App(AIMixin, UIMixin, ArtMixin, Polish10Mixin):
                     elif k == "0":
                         self.depth.reset(); self.scene3d.view.reset()
                         self.notify.show("Depth + view reset")
+                    elif k == ",": self.switch_do("bounce-")
+                    elif k == ".": self.switch_do("bounce+")
                     elif k == "tab": self._cycle_brush(-1 if ev.mod & pygame.KMOD_SHIFT else 1)
                     elif k.startswith("f") and k[1:].isdigit() and 1 <= int(k[1:]) <= len(BRUSH_ORDER):
                         self._select_brush(BRUSH_ORDER[int(k[1:]) - 1])
@@ -9032,6 +9337,10 @@ class App(AIMixin, UIMixin, ArtMixin, Polish10Mixin):
                 for i, p in enumerate(pnls): p.open = (i == keep)
                 opens = tuple(i == keep for i in range(len(pnls)))
             self._panels_open = opens
+            self.switches.visible = self._switches_visible()
+            swf = self.switches.update(ui_tip, dt)
+            if swf: self.switch_do(swf)
+            self._world_update(frame, hands)
             if self.chip.update(ui_tip, dt):
                 self.convert_suggestion()
                 if rg == "DRAW" and rtip is not None:
@@ -9041,7 +9350,7 @@ class App(AIMixin, UIMixin, ArtMixin, Polish10Mixin):
                 self._ink_lock = None
             ui_block = (self.brush_panel.blocks(rtip) or self.fx_panel.blocks(rtip) or self.edit_panel.blocks(rtip)
                         or self.layer_panel.blocks(rtip) or self.time_panel.blocks(rtip) or self.chip.blocks(rtip)
-                        or any(p.blocks(rtip) for p, _ in self._ext) or self._mode_blocks_ink() or self.toolbar.blocks(rtip) or self.palette.blocks(rtip)
+                        or any(p.blocks(rtip) for p, _ in self._ext) or self._mode_blocks_ink() or self.toolbar.blocks(rtip) or self.palette.blocks(rtip) or self.switches.blocks(rtip)
                         or self._ink_lock is not None
                         or (self.grab3d.active and self.grab3d.hand != "Right"))   # left hand holds a 3D object: right finger spins it, not draws
             self.toolbar.mode_label = f"MODE {'3D' if self.mode3d else '2D'}"
@@ -9054,7 +9363,7 @@ class App(AIMixin, UIMixin, ArtMixin, Polish10Mixin):
                 cx, cy = rtip if rtip else (WIN_W//2, WIN_H//2)
                 self.radial.open(cx, cy)
                 self.clf.reset_radial("Right")
-            if self.radial.visible and rg != "LAUNCH":
+            if self.radial.visible and rg != "PALM":
                 self.radial.close()
             rf = self.radial.update(rtip, dt)
             if rf:
@@ -9070,6 +9379,7 @@ class App(AIMixin, UIMixin, ArtMixin, Polish10Mixin):
                 self._z_now = self.depth.update(rh.size, dt)
             elif not self.mode3d:
                 self._z_now = 0.0
+            self._dgap = 0.0 if (rg == "DRAW" and rtip is not None) else getattr(self, "_dgap", 0.0) + dt
             if rg == "DRAW" and rtip is not None and not ui_block and not self._drawing_locked():
                 sx, sy = self.ema["Right"].update(float(rtip[0]), float(rtip[1]))
                 sx, sy = int(sx), int(sy)
@@ -9117,7 +9427,9 @@ class App(AIMixin, UIMixin, ArtMixin, Polish10Mixin):
                            int(ERASE_RADIUS * CAM_W / WIN_W), (80, 80, 230), 2)
 
             else:
-                if self.prev_g["Right"] == "DRAW" and self.cur_stroke:
+                near = (rtip is None or not self.cur_stroke or math.hypot(rtip[0] - self.cur_stroke[-1][0], rtip[1] - self.cur_stroke[-1][1]) < 140)
+                flicker = (not ui_block and self._dgap < DRAW_GRACE_S and near and (rtip is None or rg in ("LAUNCH", "PALM")))
+                if self.cur_stroke and not flicker and (self.prev_g["Right"] == "DRAW" or self._dgap >= DRAW_GRACE_S):
                     self._commit()
 
             self._lh_update(lg, ltip, dt)
@@ -9202,6 +9514,7 @@ class App(AIMixin, UIMixin, ArtMixin, Polish10Mixin):
             self._art_live_render(self.screen)
             self.radial.render(self.screen)
             self.toolbar.render(self.screen)
+            self.switches.render(self.screen, self._switch_state())
             self.palette.render(self.screen, self.color_key)
             self.brush_panel.render(self.screen, self.brush_key, self.rgb)
             self.fx_panel.render(self.screen, self._fx_current())
