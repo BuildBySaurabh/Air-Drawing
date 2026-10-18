@@ -426,8 +426,25 @@ If you have ideas for improvements, bug fixes, or new features, feel free to:
 
 ---
 
-## Author
-
-**Saurabh Waghamare**
-
-Python Full-Stack Developer passionate about Computer Vision, Artificial Intelligence, Full-Stack Development, and building interactive real-time applications.
+<img width="1672" height="941" alt="Image" src="https://github.com/user-attachments/assets/e6604f2a-e85d-4290-b974-b8037404de80" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/c8b946ff-0054-4682-b4c4-b813d413ad99" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/2056c8d4-9aee-446d-ac8b-ef1db88ed334" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/5af31d4f-1465-46ef-b146-e59594ae9228" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/a9167f90-78ab-4eb6-9a70-018cc60c01ec" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/9339d20c-b47d-462a-88f5-cfe6a3e30131" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/40407b0b-ab6a-4e33-bc1c-1a8c50fb137b" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/e06b1df4-763f-4b90-b470-9e3012172175" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/b6713d5e-b47e-4af1-b32a-02dbd4ba058f" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/ba07a62b-bd98-4c4b-9ee2-31d7d318e355" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/d7cdcc87-b036-4a5d-b015-e47aaacf4b26" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/bd95de79-4ccc-44af-aed7-8d3a805bd44a" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/7ff0f0cc-f422-4af1-8bc3-51398f3cc2c0" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/039de42b-3e22-4cb6-9ac4-1ae87d46078a" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/32ab7f55-79c5-49b0-8e71-aff3c2619f26" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/a7be2b6d-a12e-42ed-ad78-0f3c0393b09d" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/c71e50c2-7cac-4e59-88a8-5d0c29e2f0e8" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/592b91d1-ac41-440f-8a23-cdd1c2fd58e9" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/85e7ecf3-f095-4b70-91a0-8926e48cbbb4" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/ddf1d06d-4779-4e21-8840-5e0d3d812d7d" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/76d2bac4-a92f-4d96-9f1d-8dc9340cad64" />
+<img width="1280" height="720" alt="Image" src="https://github.com/user-attachments/assets/2faa8df5-5e2c-4e25-8b62-390f7b4f9f27" />
